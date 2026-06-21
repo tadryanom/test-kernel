@@ -7,6 +7,46 @@ volatile uint32_t ticks_do_relogio = 0; // Contador de tempo global do Kernel
 void inicializar_gdt();
 void inicializar_idt();
 void programar_pit_timer(uint32_t frequencia);
+void outb(uint16_t porta, uint8_t dado);
+uint8_t inb(uint16_t porta); // Nova função de leitura de porta de hardware
+
+// Tabela de conversão Scancode (Set 1) para ASCII (apenas teclas básicas e minúsculas)
+static const char kbd_scancode_map[128] = {
+    0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+  '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+    0,  'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',   0,
+  '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/',   0, '*',   0, ' '
+};
+
+// Posição global para sabermos onde escrever o texto do teclado na tela
+static int teclado_cursor_x = 0;
+static const int teclado_linha_y = 9;
+
+// Move o cursor piscante do monitor para uma coordenada X, Y específica
+void kernel_mover_cursor(int x, int y) {
+    uint16_t posicao = (y * 80) + x;
+
+    // Envia o byte superior da posição para o chip VGA (registrador 14)
+    outb(0x3D4, 14);
+    outb(0x3D5, (uint8_t)((posicao >> 8) & 0xFF));
+
+    // Envia o byte inferior da posição para o chip VGA (registrador 15)
+    outb(0x3D4, 15);
+    outb(0x3D5, (uint8_t)(posicao & 0xFF));
+}
+
+// Preenche toda a tela de vídeo com espaços em branco e reseta o cursor
+void kernel_clear_screen() {
+    volatile char *video_memory = (volatile char *)0xB8000;
+
+    // 80 colunas * 25 linhas = 2000 caracteres (cada um ocupa 2 bytes)
+    for (int i = 0; i < 80 * 25; i++) {
+        video_memory[i * 2] = ' ';       // Caractere vazio
+        video_memory[i * 2 + 1] = 0x07; // Cor cinza padrão
+    }
+
+    kernel_mover_cursor(0, 0);
+}
 
 // Função do Kernel para escrever em coordenadas (X, Y) na tela do QEMU
 void kernel_print_at(int x, int y, const char *str, uint8_t cor) {
@@ -19,6 +59,35 @@ void kernel_print_at(int x, int y, const char *str, uint8_t cor) {
         video_memory[offset + (i * 2)] = str[i];
         video_memory[offset + (i * 2) + 1] = cor;
         i++;
+    }
+}
+
+// Tratador do Teclado (Chamado em Ring 0 sempre que uma tecla é pressionada/solta)
+void c_keyboard_handler() {
+    // Lê o scancode elétrico da porta do chip controlador de teclado (0x60)
+    uint8_t scancode = inb(0x60);
+
+    // Se o bit 7 estiver zerado, significa que a tecla foi PRESSIONADA (Key Down)
+    // Se estiver em 1, significa que a tecla foi SOLTA (Key Up), o que ignoramos aqui
+    if (!(scancode & 0x80)) {
+        char caractere = kbd_scancode_map[scancode];
+
+        if (caractere != 0) {
+            volatile char *video_memory = (volatile char *)0xB8000;
+            int offset = (teclado_linha_y * 160) + (teclado_cursor_x * 2);
+
+            // Trata a quebra de linha ou o limite horizontal da tela
+            if (caractere == '\n' || teclado_cursor_x >= 79) {
+                teclado_cursor_x = 0;
+            } else {
+                video_memory[offset] = caractere;
+                video_memory[offset + 1] = 0x0F; // Texto Branco Brilhante
+                teclado_cursor_x++;
+            }
+
+            // Move o cursor de hardware acompanhando a digitação
+            kernel_mover_cursor(teclado_cursor_x, teclado_linha_y);
+        }
     }
 }
 
@@ -56,6 +125,8 @@ void c_gp_handler() {
 
 // Compilado com opções de Kernel (ex: -ffreestanding)
 void inicializar_kernel(void) {
+    kernel_clear_screen(); // Limpa completamente o iPXE e rastros da BIOS antes de escrever
+
     // 1. Configurar GDT nativa
     inicializar_gdt();
     // 2. Configurar IDT (para evitar a triple fault que discutimos antes!)
@@ -72,6 +143,13 @@ void inicializar_kernel(void) {
     // Dispara a interrupção por software manualmente dentro do modo Kernel
     __asm__ __volatile__("int $0x80");
     kernel_print_at(0, 4, "[PIT Timer IRQ0 ativado a 100Hz]", 0x07);
+
+    kernel_print_at(0, 7, "[Teclado IRQ1 ativado]", 0x07);
+    kernel_print_at(0, 8, "Digite algo diretamente no QEMU:", 0x0B); // Ciano
+
+    // Posiciona o cursor piscante exatamente onde a digitação do usuário começará
+    //kernel_mover_cursor(teclado_cursor_x, teclado_linha_y);
+    kernel_mover_cursor(0, 9);
 
     // 3. Configurar TSS
     // 4. Ativar Paginação / Carregar CR3

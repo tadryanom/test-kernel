@@ -113,6 +113,17 @@ ISR_Timer_handler:
     popa                # Restaura os registradores
     iret                # Retorna da interrupção retomando o código principal
 
+.global ISR_Keyboard_handler
+.extern c_keyboard_handler
+ISR_Keyboard_handler:
+    pusha               # Salva o contexto dos registradores
+    call c_keyboard_handler
+    # Envia o sinal de fim de interrupção (EOI) para o chip mestre PIC
+    mov $0x20, %al
+    out %al, $0x20
+    popa                # Restaura os registradores
+    iret                # Retorna permitindo que a CPU volte ao loop HLT estável
+
 # --- SEÇÃO DE DADOS PARA A PILHA DO KERNEL ---
 .section .bss
 .align 16

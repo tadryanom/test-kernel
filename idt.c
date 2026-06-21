@@ -21,10 +21,18 @@ extern void idt_load(uint32_t);
 extern void ISR_GP_handler(); // Tratador em Assembly para General Protection Fault
 extern void ISR_Syscall_handler(); // Protótipo da rotina Assembly
 extern void ISR_Timer_handler(); // Nova rotina em Assembly para capturar o Timer
+extern void ISR_Keyboard_handler(); // Nova interrupção em Assembly
 
 // Envia comandos para os chips controladores de IO (Portas de Hardware)
 void outb(uint16_t porta, uint8_t dado) {
     __asm__ __volatile__("outb %0, %1" : : "a"(dado), "Nd"(porta));
+}
+
+// Função essencial para o processador ler um byte vindo de uma porta física do chip
+uint8_t inb(uint16_t porta) {
+    uint8_t resultado;
+    __asm__ __volatile__("inb %1, %0" : "=a"(resultado) : "Nd"(porta));
+    return resultado;
 }
 
 // Programa o Temporizador Físico (PIT 8253) para a frequência desejada
@@ -69,6 +77,9 @@ void inicializar_idt() {
 
     // NOVO: Vetor 32 (IRQ0 - Timer do Relógio)
     configurar_idt_entry(32, (uint32_t)ISR_Timer_handler, 0x08, 0x8E);
+
+    // NOVO: Vetor 33 (IRQ1 - Teclado de Hardware)
+    configurar_idt_entry(33, (uint32_t)ISR_Keyboard_handler, 0x08, 0x8E);
 
     idt_load((uint32_t)&idp);
 }
