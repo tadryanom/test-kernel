@@ -2,6 +2,9 @@
 #include <stdint.h>
 
 volatile uint32_t ticks_do_relogio = 0; // Contador de tempo global do Kernel
+// Cria as tabelas na seção BSS (Alinhadas em 4096 bytes como o hardware exige)
+__attribute__((aligned(4096))) uint32_t page_directory[1024];
+__attribute__((aligned(4096))) uint32_t page_table_0[1024];
 
 // Protótipos das funções de Kernel
 void inicializar_gdt();
@@ -31,6 +34,32 @@ static int shift_pressionado = 0;
 // Posição global para sabermos onde escrever o texto do teclado na tela
 static int teclado_cursor_x = 0;
 static const int teclado_linha_y = 9;
+
+void ativar_paginacao_simples() {
+    // 1. Mapeia o primeiro Megabyte de forma linear (1:1) usando a page_table_0
+    // Isso garante que o Kernel continue rodando quando ligarmos a paginação!
+    for (int i = 0; i < 1024; i++) {
+        // Atributos: 0x3 = Página Presente + Leitura/Escrita ativa
+        page_table_0[i] = (i * 4096) | 0x3;
+    }
+
+    // 2. Coloca a primeira tabela dentro do Diretório de Páginas
+    page_directory[0] = ((uint32_t)page_table_0) | 0x3;
+
+    // 3. Deixa todas as outras 1023 entradas do Diretório como ZERO (Não Presentes)
+    for (int i = 1; i < 1024; i++) {
+        page_directory[i] = 0;
+    }
+
+    // 4. Carrega o endereço do Diretório no Registrador de Controle CR3
+    __asm__ __volatile__("mov %0, %%cr3" : : "r"(page_directory));
+
+    // 5. Liga o bit de Paginação (Bit 31) no registrador CR0
+    uint32_t cr0;
+    __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= 0x80000000; // Ativa o bit PG
+    __asm__ __volatile__("mov %0, %%cr0" : : "r"(cr0));
+}
 
 // Move o cursor piscante do monitor para uma coordenada X, Y específica
 void kernel_mover_cursor(int x, int y) {
@@ -146,13 +175,18 @@ void inicializar_kernel(void) {
     inicializar_idt();
     // A partir deste ponto, se o código executar "INT 0x80", ele NÃO causará
     // uma falha tripla, pois o vetor de #GP (13) está devidamente capturado!
+    // 3. Configurar TSS
 
     // Configura o chip PIT (Programmable Interval Timer) para disparar 100 vezes por segundo (100 Hz)
     programar_pit_timer(100);
+
+    // 4. Ativar Paginação / Carregar CR3
+    ativar_paginacao_simples();
+
     // Ativa as interrupções de hardware na CPU (limpa a flag de interrupção)
     __asm__ __volatile__("sti");
 
-    kernel_print_at(0, 0, "KERNEL HIBRIDO ATIVO: Rodando com sucesso em Ring 0!", 0x0A);
+    kernel_print_at(0, 0, "KERNEL HIBRIDO ATIVO: Pagnacao Ligada em Ring 0!", 0x0A);
     // Dispara a interrupção por software manualmente dentro do modo Kernel
     __asm__ __volatile__("int $0x80");
     kernel_print_at(0, 4, "[PIT Timer IRQ0 ativado a 100Hz]", 0x07);
@@ -169,8 +203,11 @@ void inicializar_kernel(void) {
     //volatile int c = a / b; // Isso gerará um erro físico #DE (Vetor 0)
     //(void)c;
 
-    // 3. Configurar TSS
-    // 4. Ativar Paginação / Carregar CR3
+    // FORÇANDO UM PAGE FAULT (VETOR 14) PROPOSITAL
+    // Criamos um ponteiro apontando para um endereço arbitrário e tentamos gravar dados nele
+    volatile uint32_t *ponteiro_invalido = (volatile uint32_t *)0xDEADBEEF;
+    *ponteiro_invalido = 42; // Isso vai disparar a exceção #PF imediatamente!
+
     // 5. Entrar no loop do Sistema Operacional
     while(1) {
         __asm__("hlt");

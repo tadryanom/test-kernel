@@ -61,12 +61,38 @@ void programar_pit_timer(uint32_t frequencia) {
     outb(0x40, (uint8_t)((divisor >> 8) & 0xFF)); // Byte superior do divisor
 }
 
+// Função auxiliar para converter um número hexadecimal em string (para exibir o endereço de CR2)
+void hex_para_string(uint32_t num, char *str) {
+    char const hex_chars[] = "0123456789ABCDEF";
+    str[0] = '0';
+    str[1] = 'x';
+    for (int i = 7; i >= 0; i--) {
+        str[i + 2] = hex_chars[num & 0xF];
+        num >>= 4;
+    }
+    str[10] = '\0';
+}
+
 // O Despachante Central (chamado pelo Assembly para QUALQUER interrupção)
 void despachante_idt_central(struct abr_registradores *regs) {
     // 1. Trata Exceções Internas da CPU (0 a 31)
     if (regs->num_int < 32) {
         kernel_print_at(0, 10, "!!! ERRO DE PRIVILEGIO DETECTADO EM RING 0 !!!", 0x4F); // Branco no Vermelho
         kernel_print_at(0, 11, mensagens_excecao[regs->num_int], 0x4F);
+
+        // SE FOR PAGE FAULT (VETOR 14): Lê o registrador CR2 para saber o endereço inválido
+        if (regs->num_int == 14) {
+            uint32_t endereco_falha;
+
+            // Instrução Assembly para mover o valor de CR2 para uma variável C
+            __asm__ __volatile__("mov %%cr2, %0" : "=r"(endereco_falha));
+
+            char buffer_hex[11];
+            hex_para_string(endereco_falha, buffer_hex);
+
+            kernel_print_at(0, 12, "Endereco linear que causou a falha: ", 0x4F);
+            kernel_print_at(36, 12, buffer_hex, 0x4F);
+        }
 
         // Se ocorrer uma falha crítica, paralisamos a CPU com segurança para diagnóstico
         while(1) { __asm__ __volatile__("cli; hlt"); }
