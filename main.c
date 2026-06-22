@@ -114,15 +114,6 @@ void c_syscall_handler() {
     kernel_print_at(0, 2, "-> INTERRUPCAO INT 0x80 CAPTURADA COM SUCESSO EM RING 0!", 0x0E);
 }
 
-// O tratador em C que será chamado pelo wrapper em Assembly
-void c_gp_handler() {
-    // Em um SO real, você imprimiria uma mensagem de erro na tela (VGA)
-    // Como estamos prevenindo a Falha Tripla, vamos apenas travar a CPU com segurança
-    while(1) {
-        __asm__ __volatile__("cli; hlt");
-    }
-}
-
 // Compilado com opções de Kernel (ex: -ffreestanding)
 void inicializar_kernel(void) {
     kernel_clear_screen(); // Limpa completamente o iPXE e rastros da BIOS antes de escrever
@@ -150,6 +141,12 @@ void inicializar_kernel(void) {
     // Posiciona o cursor piscante exatamente onde a digitação do usuário começará
     //kernel_mover_cursor(teclado_cursor_x, teclado_linha_y);
     kernel_mover_cursor(0, 9);
+
+    // FORÇANDO UM CRASH PROPOSITAL DE EXCEÇÃO (Vetor 0)
+    volatile int a = 5;
+    volatile int b = 0;
+    volatile int c = a / b; // Isso gerará um erro físico #DE (Vetor 0)
+    (void)c;
 
     // 3. Configurar TSS
     // 4. Ativar Paginação / Carregar CR3

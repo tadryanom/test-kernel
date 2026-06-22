@@ -17,17 +17,21 @@ struct idt_ptr {
 struct idt_entry idt[256];
 struct idt_ptr idp;
 
+// Estrutura que reflete o estado da pilha empilhado pelo Assembly (pusha + erros)
+struct abr_registradores {
+    uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax; // Empilhados por pusha
+    uint32_t num_int, codigo_erro;                  // Empilhados pelas macros do Assembly
+    uint32_t eip, cs, eflags, useresp, ss;          // Empilhados automaticamente pela CPU
+};
+
+// Declaração do array de ponteiros para os tratadores gerados no Assembly
+extern uint32_t tabela_wrappers_idt[];
 extern void idt_load(uint32_t);
-extern void ISR_GP_handler(); // Tratador em Assembly para General Protection Fault
-extern void ISR_Syscall_handler(); // Protótipo da rotina Assembly
-extern void ISR_Timer_handler(); // Nova rotina em Assembly para capturar o Timer
-extern void ISR_Keyboard_handler(); // Nova interrupção em Assembly
 
 // Envia comandos para os chips controladores de IO (Portas de Hardware)
 void outb(uint16_t porta, uint8_t dado) {
     __asm__ __volatile__("outb %0, %1" : : "a"(dado), "Nd"(porta));
 }
-
 // Função essencial para o processador ler um byte vindo de uma porta física do chip
 uint8_t inb(uint16_t porta) {
     uint8_t resultado;
@@ -35,12 +39,62 @@ uint8_t inb(uint16_t porta) {
     return resultado;
 }
 
+void kernel_print_at(int x, int y, const char *str, uint8_t cor);
+
+// Array de strings amigáveis para descrever as exceções da CPU (0 a 31)
+static const char *mensagens_excecao[] = {
+    "Division By Zero", "Debug", "Non Maskable Interrupt", "Breakpoint",
+    "Into Detected Overflow", "Out of Bounds", "Invalid Opcode", "No Coprocessor",
+    "Double Fault", "Coprocessor Segment Overrun", "Bad TSS", "Segment Not Present",
+    "Stack Fault", "General Protection Fault", "Page Fault", "Unknown Interrupt",
+    "Coprocessor Fault", "Alignment Check", "Machine Check", "SIMD Floating-Point",
+    "Virtualization Exception", "Control Protection Exception", "Reserved", "Reserved",
+    "Reserved", "Reserved", "Reserved", "Reserved", "Reserved", "Reserved",
+    "Hypervisor Injection Exception", "VMM Communication Exception", "Security Exception"
+};
+
 // Programa o Temporizador Físico (PIT 8253) para a frequência desejada
 void programar_pit_timer(uint32_t frequencia) {
     uint32_t divisor = 1193180 / frequencia; // O oscilador nativo roda a 1.19 MHz
     outb(0x43, 0x36);                        // Envia o byte de comando (Modo 3)
     outb(0x40, (uint8_t)(divisor & 0xFF));   // Byte inferior do divisor
     outb(0x40, (uint8_t)((divisor >> 8) & 0xFF)); // Byte superior do divisor
+}
+
+// O Despachante Central (chamado pelo Assembly para QUALQUER interrupção)
+void despachante_idt_central(struct abr_registradores *regs) {
+    // 1. Trata Exceções Internas da CPU (0 a 31)
+    if (regs->num_int < 32) {
+        kernel_print_at(0, 10, "!!! ERRO DE PRIVILEGIO DETECTADO EM RING 0 !!!", 0x4F); // Branco no Vermelho
+        kernel_print_at(0, 11, mensagens_excecao[regs->num_int], 0x4F);
+
+        // Se ocorrer uma falha crítica, paralisamos a CPU com segurança para diagnóstico
+        while(1) { __asm__ __volatile__("cli; hlt"); }
+    }
+
+    // 2. Trata Interrupções de Hardware (IRQs remapeadas de 32 a 47)
+    if (regs->num_int >= 32 && regs->num_int <= 47) {
+        // Encaminha para funções específicas baseadas na IRQ
+        if (regs->num_int == 32) {
+            extern void c_timer_handler();
+            c_timer_handler();
+        } else if (regs->num_int == 33) {
+            extern void c_keyboard_handler();
+            c_keyboard_handler();
+        }
+
+        // Envia sinal EOI (End of Interrupt) para os chips PICs
+        if (regs->num_int >= 40) {
+            outb(0xA0, 0x20); // Envia EOI para o PIC Escravo se for IRQ 8-15
+        }
+        outb(0x20, 0x20);     // Envia EOI para o PIC Mestre
+    }
+
+    // 3. Trata interrupções de Software como a Syscall (128)
+    if (regs->num_int == 128) {
+        extern void c_syscall_handler();
+        c_syscall_handler();
+    }
 }
 
 void configurar_idt_entry(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags) {
@@ -55,11 +109,6 @@ void inicializar_idt() {
     idp.limit = (sizeof(struct idt_entry) * 256) - 1;
     idp.base  = (uint32_t)&idt;
 
-    // Limpa a IDT preenchendo com zeros
-    for(int i = 0; i < 256; i++) {
-        configurar_idt_entry(i, 0, 0, 0);
-    }
-
     // Remapeia o controlador PIC de interrupções de hardware para começar no vetor 32
     outb(0x20, 0x11); outb(0xA0, 0x11);
     outb(0x21, 0x20); outb(0xA1, 0x28);
@@ -67,19 +116,13 @@ void inicializar_idt() {
     outb(0x21, 0x01); outb(0xA1, 0x01);
     outb(0x21, 0x00); outb(0xA1, 0x00);
 
-    // Configura especificamente o vetor 13 (0x0D) - General Protection Fault (#GP)
-    // 0x8E = Presente, Ring 0, Tipo Interrupção 32-bit
-    configurar_idt_entry(13, (uint32_t)ISR_GP_handler, 0x08, 0x8E);
+    // Registra os primeiros 48 vetores automaticamente usando a tabela gerada no Assembly
+    for (int i = 0; i < 48; i++) {
+        configurar_idt_entry(i, tabela_wrappers_idt[i], 0x08, 0x8E);
+    }
 
-    // NOVO - Vetor 0x80 (128): Captura a nossa interrupção customizada
-    // 0x8E = Presente, Ring 0, Tipo Interrupção 32-bit
-    configurar_idt_entry(128, (uint32_t)ISR_Syscall_handler, 0x08, 0x8E);
-
-    // NOVO: Vetor 32 (IRQ0 - Timer do Relógio)
-    configurar_idt_entry(32, (uint32_t)ISR_Timer_handler, 0x08, 0x8E);
-
-    // NOVO: Vetor 33 (IRQ1 - Teclado de Hardware)
-    configurar_idt_entry(33, (uint32_t)ISR_Keyboard_handler, 0x08, 0x8E);
+    // Registra explicitamente o vetor 128 (0x80) para a Syscall
+    configurar_idt_entry(128, tabela_wrappers_idt[48], 0x08, 0x8E);
 
     idt_load((uint32_t)&idp);
 }
