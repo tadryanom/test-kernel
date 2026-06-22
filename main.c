@@ -10,6 +10,11 @@ volatile uint32_t ticks_do_relogio = 0; // Contador de tempo global do Kernel
 __attribute__((aligned(4096))) uint32_t page_directory[1024];
 __attribute__((aligned(4096))) uint32_t page_table_0[1024];
 
+// --- VARIÁVEIS E FUNÇÕES DO SHELL EM RING 0 ---
+#define BUFFER_SHELL_TAMANHO 64
+static char shell_buffer[BUFFER_SHELL_TAMANHO];
+static int shell_buffer_idx = 0;
+
 // Protótipos das funções de Kernel
 void inicializar_gdt();
 void inicializar_idt();
@@ -39,9 +44,6 @@ static int cursor_y = 0;
 
 // Variável de estado global para controlar se o Shift está pressionado
 static int shift_pressionado = 0;
-// Posição global para sabermos onde escrever o texto do teclado na tela
-static int teclado_cursor_x = 0;
-static const int teclado_linha_y = 9;
 
 void ativar_paginacao_simples() {
     // 1. Mapeia o primeiro Megabyte de forma linear (1:1) usando a page_table_0
@@ -91,10 +93,8 @@ void kernel_clear_screen() {
         video_memory[i * 2] = ' ';       // Caractere vazio
         video_memory[i * 2 + 1] = 0x07; // Cor cinza padrão
     }
-
     cursor_x = 0;
     cursor_y = 0;
-
     kernel_mover_cursor(0, 0);
 }
 
@@ -243,43 +243,75 @@ void kernel_print_at(int x, int y, const char *str, uint8_t cor) {
     }
 }
 
+// Função simples para comparar duas strings no bare-metal (substituta da strcmp)
+int kernel_strcmp(const char *s1, const char *s2) {
+    int i = 0;
+    while (s1[i] != '\0' && s2[i] != '\0') {
+        if (s1[i] != s2[i]) return 1;
+        i++;
+    }
+    if (s1[i] == '\0' && s2[i] == '\0') return 0;
+    return 1;
+}
+
+// O Interpretador de Comandos do seu Sistema Operacional
+void kernel_processar_comando(const char *comando) {
+    kernel_printf("\n"); // Pula para a linha de baixo para exibir a resposta
+
+    if (kernel_strcmp(comando, "help") == 0) {
+        kernel_printf("Comandos aceitos:\n");
+        kernel_printf("  help\t\tExibe esta lista de comandos\n");
+        kernel_printf("  clear\t\tLimpa a tela do monitor virtual\n");
+        kernel_printf("  reboot\tForca um reinicio fisico via hardware\n");
+    } else if (kernel_strcmp(comando, "clear") == 0) {
+        kernel_clear_screen();
+    } else if (kernel_strcmp(comando, "reboot") == 0) {
+        kernel_printf("Reiniciando a CPU...\n");
+        // Pulsa a linha de reset do processador através do controlador 8042 (Porta 0x64)
+        // Isso força uma Falha Tripla controlada por hardware para reboot imediato!
+        uint8_t bom = 0x02;
+        while (bom & 0x02) {
+            bom = inb(0x64);
+        }
+        outb(0x64, 0xFE);
+    } else if (comando[0] != '\0') {
+        kernel_printf("Comando invalido: '%s'. Digite 'help'.\n", comando);
+    }
+
+    kernel_printf("\nso_hibrido> ");
+}
+
 // Tratador do Teclado (Chamado em Ring 0 sempre que uma tecla é pressionada/solta)
 void c_keyboard_handler() {
     // Lê o scancode elétrico da porta do chip controlador de teclado (0x60)
     uint8_t scancode = inb(0x60);
-
      // DETECÇÃO: Verifica se as teclas de Shift (Esquerdo: 0x2A ou Direito: 0x36) foram PRESSIONADAS
     if (scancode == 0x2A || scancode == 0x36) {
         shift_pressionado = 1;
         return;
     }
-
     // DETECÇÃO: Verifica se as teclas de Shift (Esquerdo: 0xAA ou Direito: 0xB6) foram SOLTAS
     if (scancode == 0xAA || scancode == 0xB6) {
         shift_pressionado = 0;
         return;
     }
-
     // Se o bit 7 estiver zerado, significa que a tecla foi PRESSIONADA (Key Down)
     // Se estiver em 1, significa que a tecla foi SOLTA (Key Up), o que ignoramos aqui
     if (!(scancode & 0x80)) {
         char caractere = shift_pressionado ? kbd_map_shift[scancode] : kbd_map_normal[scancode];
 
         if (caractere != 0) {
-            volatile char *video_memory = (volatile char *)0xB8000;
-            int offset = (teclado_linha_y * 160) + (teclado_cursor_x * 2);
-
-            // Trata a quebra de linha ou o limite horizontal da tela
-            if (caractere == '\n' || teclado_cursor_x >= 79) {
-                teclado_cursor_x = 0;
-            } else {
-                video_memory[offset] = caractere;
-                video_memory[offset + 1] = 0x0F; // Texto Branco Brilhante
-                teclado_cursor_x++;
+            // Cenário A: Se pressionar ENTER, processa o comando acumulado
+            if (caractere == '\n') {
+                shell_buffer[shell_buffer_idx] = '\0'; // Finaliza a string do comando
+                kernel_processar_comando(shell_buffer);
+                shell_buffer_idx = 0; // Reseta o buffer para o próximo comando
             }
-
-            // Move o cursor de hardware acompanhando a digitação
-            kernel_mover_cursor(teclado_cursor_x, teclado_linha_y);
+            // Cenário B: Se for caractere normal, joga no buffer e espelha na tela
+            else if (shell_buffer_idx < BUFFER_SHELL_TAMANHO - 1) {
+                shell_buffer[shell_buffer_idx++] = caractere;
+                kernel_putc(caractere, 0x0F); // Texto branco brilhante
+            }
         }
     }
 }
@@ -293,12 +325,12 @@ void c_timer_handler() {
         uint32_t segundos = ticks_do_relogio / 100;
 
         // Conversão ultra simples de inteiro para string (suporta até 99 segundos)
-        char tempo_str[] = "Tempo de Boot: 00s";
-        tempo_str[15] = '0' + (segundos / 10);
-        tempo_str[16] = '0' + (segundos % 10);
+        char tempo_str[] = "Boot: 00s";
+        tempo_str[6] = '0' + (segundos / 10);
+        tempo_str[7] = '0' + (segundos % 10);
 
-        // Escreve de forma fixa na Linha 5, Coluna 0 da tela do QEMU
-        kernel_print_at(0, 8, tempo_str, 0x0E); // Texto Amarelo
+        // Escreve de forma fixa na Linha 0, Coluna 65 da tela do QEMU
+        kernel_print_at(65, 0, tempo_str, 0x0E);
     }
 }
 
@@ -336,6 +368,9 @@ void inicializar_kernel(void) {
     kernel_printf("IDT\t\t\t[OK]\t\t%x\n", tabela_wrappers_idt);
     kernel_printf("Paging\t\t[OK]\t\t%x\n", &page_directory);
     kernel_printf("Timer\t\t[ATIVO]\t\t100 Hz\n");
+
+    // Abre a linha de comando oficial do seu SO
+    kernel_printf("\nso_hibrido> ");
 
     // 5. Entrar no loop do Sistema Operacional
     while(1) {
