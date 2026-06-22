@@ -1,5 +1,6 @@
 // main.c
 #include <stdint.h>
+#include <stdarg.h> // Necessário para gerenciar argumentos variáveis (...), nativo do GCC
 
 volatile uint32_t ticks_do_relogio = 0; // Contador de tempo global do Kernel
 // Cria as tabelas na seção BSS (Alinhadas em 4096 bytes como o hardware exige)
@@ -28,6 +29,10 @@ static const char kbd_map_shift[] = {
     0,  'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',   0,
   '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?',   0, '*',   0, ' '
 };
+
+// Variáveis globais para controlar a posição atual do cursor na tela (80x25)
+static int cursor_x = 0;
+static int cursor_y = 0;
 
 // Variável de estado global para controlar se o Shift está pressionado
 static int shift_pressionado = 0;
@@ -84,7 +89,131 @@ void kernel_clear_screen() {
         video_memory[i * 2 + 1] = 0x07; // Cor cinza padrão
     }
 
+    cursor_x = 0;
+    cursor_y = 0;
+
     kernel_mover_cursor(0, 0);
+}
+
+// Função base para imprimir um único caractere e gerenciar quebras de linha
+void kernel_putc(char c, uint8_t cor) {
+    volatile char *video_memory = (volatile char *)0xB8000;
+
+    if (c == '\n') {
+        cursor_x = 0;
+        cursor_y++;
+    } else {
+        int offset = (cursor_y * 160) + (cursor_x * 2);
+        video_memory[offset] = c;
+        video_memory[offset + 1] = cor;
+        cursor_x++;
+
+        if (cursor_x >= 80) {
+            cursor_x = 0;
+            cursor_y++;
+        }
+    }
+
+    // Rolagem de tela simples (Scroll) se estourar as 25 linhas
+    if (cursor_y >= 25) {
+        for (int i = 0; i < 80 * 24; i++) {
+            video_memory[i * 2] = video_memory[(i + 80) * 2];
+            video_memory[i * 2 + 1] = video_memory[(i + 80) * 2 + 1];
+        }
+        for (int i = 80 * 24; i < 80 * 25; i++) {
+            video_memory[i * 2] = ' ';
+            video_memory[i * 2 + 1] = 0x07;
+        }
+        cursor_y = 24;
+    }
+    kernel_mover_cursor(cursor_x, cursor_y);
+}
+
+// Imprime uma string simples usando o cursor dinâmico
+void kernel_print(const char *str, uint8_t cor) {
+    int i = 0;
+    while (str[i] != '\0') {
+        kernel_putc(str[i], cor);
+        i++;
+    }
+}
+
+// Converte inteiro para string decimal de forma segura
+void itoa(int n, char *str) {
+    int i = 0, negativo = 0;
+    if (n < 0) { negativo = 1; n = -n; }
+    do {
+        str[i++] = (n % 10) + '0';
+    } while ((n /= 10) > 0);
+    if (negativo) str[i++] = '-';
+    str[i] = '\0';
+
+    // Inverte a string gerada
+    for (int j = 0; j < i / 2; j++) {
+        char tmp = str[j];
+        str[j] = str[i - j - 1];
+        str[i - j - 1] = tmp;
+    }
+}
+
+// Converte inteiro para string hexadecimal de forma segura
+void itoh(uint32_t n, char *str) {
+    char const hex_chars[] = "0123456789ABCDEF";
+    int i = 0;
+    do {
+        str[i++] = hex_chars[n & 0xF];
+    } while ((n >>= 4) > 0);
+    str[i] = '\0';
+
+    // Inverte a string gerada
+    for (int j = 0; j < i / 2; j++) {
+        char tmp = str[j];
+        str[j] = str[i - j - 1];
+        str[i - j - 1] = tmp;
+    }
+}
+
+// O nosso printf customizado do Kernel (Aceita %s, %d, %x com cor fixa 0x07)
+void kernel_printf(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+
+    int i = 0;
+    char buf[32];
+
+    while (format[i] != '\0') {
+        if (format[i] == '%') {
+            i++;
+            switch (format[i]) {
+                case 's': {
+                    char *s = va_arg(args, char *);
+                    kernel_print(s, 0x07);
+                    break;
+                }
+                case 'd': {
+                    int d = va_arg(args, int);
+                    itoa(d, buf);
+                    kernel_print(buf, 0x07);
+                    break;
+                }
+                case 'x': {
+                    uint32_t x = va_arg(args, uint32_t);
+                    itoh(x, buf);
+                    kernel_print("0x", 0x07);
+                    kernel_print(buf, 0x07);
+                    break;
+                }
+                default:
+                    kernel_putc('%', 0x07);
+                    kernel_putc(format[i], 0x07);
+                    break;
+            }
+        } else {
+            kernel_putc(format[i], 0x07);
+        }
+        i++;
+    }
+    va_end(args);
 }
 
 // Função do Kernel para escrever em coordenadas (X, Y) na tela do QEMU
@@ -186,31 +315,17 @@ void inicializar_kernel(void) {
     // Ativa as interrupções de hardware na CPU (limpa a flag de interrupção)
     __asm__ __volatile__("sti");
 
-    kernel_print_at(0, 0, "KERNEL HIBRIDO ATIVO: Pagnacao Ligada em Ring 0!", 0x0A);
-    // Dispara a interrupção por software manualmente dentro do modo Kernel
-    __asm__ __volatile__("int $0x80");
-    kernel_print_at(0, 4, "[PIT Timer IRQ0 ativado a 100Hz]", 0x07);
+    // Testando o printf flexível com strings e decimais
+    kernel_printf("KERNEL HIBRIDO OPERACIONAL\n");
+    kernel_printf("--------------------------\n");
+    kernel_printf("Pagina de boot ativa em modo linear 1:1.\n");
+    kernel_printf("Frequencia do Timer (IRQ0): %d Hz\n", 100);
+    kernel_printf("Endereco fisico da tabela: %x\n", &page_directory);
+    kernel_printf("\nSimulando falha de execucao...\n");
 
-    kernel_print_at(0, 7, "[Teclado IRQ1 ativado]", 0x07);
-    kernel_print_at(0, 8, "Digite algo diretamente no QEMU:", 0x0B); // Ciano
-
-    // Posiciona o cursor piscante exatamente onde a digitação do usuário começará
-    kernel_mover_cursor(teclado_cursor_x, teclado_linha_y);
-
-    // FORÇANDO UM CRASH PROPOSITAL DE EXCEÇÃO (Vetor 0)
-    //volatile int a = 5;
-    //volatile int b = 0;
-    //volatile int c = a / b; // Isso gerará um erro físico #DE (Vetor 0)
-    //(void)c;
-
-    // FORÇANDO UM PAGE FAULT (VETOR 14) PROPOSITAL
-    // Criamos um ponteiro apontando para um endereço arbitrário e tentamos gravar dados nele
-    volatile uint32_t *ponteiro_invalido = (volatile uint32_t *)0xDEADBEEF;
-    *ponteiro_invalido = 42; // Isso vai disparar a exceção #PF imediatamente!
-
-    // PROVA DE AUTOCURA: Se o Kernel chegar nesta linha de código abaixo,
-    // significa que o tratador corrigiu a memória e evitou o travamento da CPU!
-    kernel_print_at(0, 17, "-> SUCESSO: Kernel se recuperou do Page Fault e continua vivo!", 0x0A); // Verde brilhante
+    // FORÇANDO UM "INVALID OPCODE" (Vetor 6) PROPOSITAL VIA ASSEMBLY
+    // A instrução 'ud2' gera intencionalmente um opcode inválido no x86
+    __asm__ __volatile__("ud2");
 
     // 5. Entrar no loop do Sistema Operacional
     while(1) {

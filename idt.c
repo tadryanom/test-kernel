@@ -42,6 +42,8 @@ uint8_t inb(uint16_t porta) {
     return resultado;
 }
 
+// Declara a função externa criada no main.c
+void kernel_printf(const char *format, ...);
 void kernel_print_at(int x, int y, const char *str, uint8_t cor);
 
 // Array de strings amigáveis para descrever as exceções da CPU (0 a 31)
@@ -83,39 +85,20 @@ void despachante_idt_central(struct abr_registradores *regs) {
         // SE FOR PAGE FAULT (VETOR 14): Lê o registrador CR2 para saber o endereço inválido
         if (regs->num_int == 14) {
             uint32_t endereco_falha;
-
             // Instrução Assembly para mover o valor de CR2 para uma variável C
             __asm__ __volatile__("mov %%cr2, %0" : "=r"(endereco_falha));
-
-            char buffer_hex[11];
-            hex_para_string(endereco_falha, buffer_hex);
-
-            kernel_print_at(0, 12, "Endereco linear que causou a falha: ", 0x4F);
-            kernel_print_at(36, 12, buffer_hex, 0x4F);
 
             // Verifica se a falha ocorreu especificamente no endereço do nosso teste (0xDEADBEEF)
             if (endereco_falha == 0xDEADBEEF) {
                 // Alerta visual rápido em amarelo no meio da tela para mostrar que interceptamos
                 kernel_print_at(0, 15, "[Page Fault] Endereco 0xDEADBEEF interceptado! Mapeando agora...", 0x0E);
-
-                // --- MECANISMO DE AUTOCURA ---
-                // Vamos usar a mesma page_table_0 existente para mapear o endereço alto.
-                // O índice no diretório de páginas para 0xDEADBEEF é (0xDEADBEEF >> 22) = 890.
-                int indice_diretorio = endereco_falha >> 22;
-
                 // Aponta a entrada 890 do Diretório de Páginas para a nossa tabela física
                 // Atributos: 0x3 = Presente + Leitura/Escrita
-                page_directory[indice_diretorio] = ((uint32_t)&page_table_0) | 0x3;
-
-                // O índice dentro da tabela de páginas para 0xDEADBEEF é (0xDEADBEEF >> 12) & 0x3FF = 685.
-                int indice_tabela = (endereco_falha >> 12) & 0x3FF;
-
+                page_directory[endereco_falha >> 22] = ((uint32_t)&page_table_0) | 0x3;
                 // Mapeia o endereço linear de forma 1:1 física temporária apenas para aceitar a escrita
-                page_table_0[indice_tabela] = 0x00100000 | 0x3; // Joga na memória física estável de 1MB
-
+                page_table_0[(endereco_falha >> 12) & 0x3FF] = 0x00100000 | 0x3; // Joga na memória física estável de 1MB
                 // OBRIGATÓRIO: Recarrega o CR3 para invalidar o cache da CPU (TLB Flush)
                 __asm__ __volatile__("mov %%cr3, %%eax\n mov %%eax, %%cr3\n" : : : "eax");
-
                 // RETORNO SEGURO:
                 // O processador x86 joga o EIP exatamente em cima da instrução que falhou.
                 // Como agora o endereço está mapeado, basta retornar do despachante.
@@ -124,9 +107,20 @@ void despachante_idt_central(struct abr_registradores *regs) {
             }
         }
 
-        // Se for qualquer outra exceção não tratada, mantém a tela de pânico padrão
-        kernel_print_at(0, 10, "!!! ERRO DE PRIVILEGIO DETECTADO EM RING 0 !!!", 0x4F); // Branc>
-        kernel_print_at(0, 11, mensagens_excecao[regs->num_int], 0x4F);
+        // --- PAINEL DE DUMP DE REGISTRADORES FLEXÍVEL ---
+        kernel_printf("\n\n!!! ERRO CRITICO DO PROCESSADOR: %s (Vetor %d) !!!\n", mensagens_excecao[regs->num_int], regs->num_int);
+        kernel_printf("----------------------------------------------------------------------\n");
+        kernel_printf(" EAX: %x   EBX: %x   ECX: %x   EDX: %x\n", regs->eax, regs->ebx, regs->ecx, regs->edx);
+        kernel_printf(" EDI: %x   ESI: %x   EBP: %x   ESP: %x\n", regs->edi, regs->esi, regs->ebp, regs->esp);
+        kernel_printf(" EIP: %x   CS:  %x   EFLAGS: %x\n", regs->eip, regs->cs, regs->eflags);
+        if (regs->num_int == 14) {
+            uint32_t cr2_val;
+            __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2_val));
+            kernel_printf(" CR2 (Endereco do Page Fault): %x\n", cr2_val);
+        }
+        kernel_printf("----------------------------------------------------------------------\n");
+        kernel_printf("CPU paralisada em Ring 0 para protecao de hardware.");
+
         // Se ocorrer uma falha crítica, paralisamos a CPU com segurança para diagnóstico
         while(1) { __asm__ __volatile__("cli; hlt"); }
     }
