@@ -16,14 +16,17 @@ multiboot_header:
 .extern inicializar_kernel
 .extern inicializar_user_mode
 _start:
-    # 1. Salva o valor de CS em um registrador de uso geral AX
+    # 1. SALVAMENTO IMEDIATO: Guarda os dados puros do QEMU antes de QUALQUER outra instrução
+    mov %eax, multiboot_magic_salvo
+    mov %ebx, multiboot_info_salvo
+    # 2. Salva o valor de CS em um registrador de uso geral AX
     mov %cs, %ax
-    # 2. Isola os 2 bits menos significativos (CPL)
+    # 3. Isola os 2 bits menos significativos (CPL)
     and $3, %ax
-    # 3. Compara o CPL com 0 (Ring 0 - Modo Kernel)
+    # 4. Compara o CPL com 0 (Ring 0 - Modo Kernel)
     cmp $0, %ax
     je .loop_kernel
-    # 4. Compara o CPL com 3 (Ring 3 - User Mode)
+    # 5. Compara o CPL com 3 (Ring 3 - User Mode)
     cmp $3, %ax
     je .loop_user
 
@@ -34,10 +37,12 @@ _start:
     jmp .trava_cpu
 
 .loop_kernel:
-    # --- FLUXO RING 0 (BOOT VIA GRUB) ---
-    # Configuramos uma pilha temporária para o Kernel funcionar com segurança.
+    # --- FLUXO RING 0 (BOOT VIA MULTIBOOT) ---
+    # 1. Inicializa a nossa pilha estática do Kernel de Ring 0
     mov $stack_top, %esp
-    # Chama a sua função em C que configura GDT, IDT, TSS e Paginação
+    # 2. Alinha a pilha em 16 bytes para manter a conformidade da ABI do GCC
+    and $-16, %esp
+    # 3. Salta para o C levando as estruturas de boot
     call inicializar_kernel
     # Se o kernel retornar por erro, trava
     jmp .trava_cpu

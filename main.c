@@ -2,6 +2,27 @@
 #include <stdint.h>
 #include <stdarg.h> // Necessário para gerenciar argumentos variáveis (...), nativo do GCC
 
+// Definição parcial da estrutura oficial Multiboot 1 (especificação de hardware)
+struct multiboot_info {
+    uint32_t flags;
+    uint32_t mem_lower;    // Quantidade de memória baixa básica (em KB)
+    uint32_t mem_upper;    // Quantidade de memória alta estendida (em KB)
+    uint32_t boot_device;
+    uint32_t cmdline;      // Ponteiro físico para os argumentos passados pelo GRUB
+    uint32_t mods_count;
+    uint32_t mods_addr;
+    uint32_t num;
+    uint32_t size;
+    uint32_t addr;
+    uint32_t shndx;
+    uint32_t mmap_length;
+    uint32_t mmap_addr;
+} __attribute__((packed));
+
+// AS DUAS VARIÁVEIS GLOBAIS QUE O ASSEMBLY VAI PREENCHER FIZAMENTE
+uint32_t multiboot_magic_salvo = 0;
+uint32_t multiboot_info_salvo = 0;
+
 // Declaração do array de ponteiros para os tratadores gerados no Assembly
 extern uint32_t tabela_wrappers_idt[];
 
@@ -358,7 +379,6 @@ void c_syscall_handler() {
 // Compilado com opções de Kernel (ex: -ffreestanding)
 void inicializar_kernel(void) {
     kernel_clear_screen(); // Limpa completamente o iPXE e rastros da BIOS antes de escrever
-
     // 1. Configurar GDT nativa
     inicializar_gdt();
     // 2. Configurar IDT (para evitar a triple fault que discutimos antes!)
@@ -369,14 +389,11 @@ void inicializar_kernel(void) {
 
     // Configura o chip PIT (Programmable Interval Timer) para disparar 100 vezes por segundo (100 Hz)
     programar_pit_timer(100);
-
     // 4. Ativar Paginação / Carregar CR3
     ativar_paginacao_simples();
-
     // Ativa as interrupções de hardware na CPU (limpa a flag de interrupção)
     __asm__ __volatile__("sti");
 
-    // Testando o kernel_printf atualizado com suporte a tabulações \t
     kernel_printf("TABELA DE STATUS DO HARDWARE (RING 0):\n");
     kernel_printf("-------------------------------------\n");
     kernel_printf("COMPONENTE\tSTATUS\t\tENDERECO\n");
@@ -384,6 +401,41 @@ void inicializar_kernel(void) {
     kernel_printf("IDT\t\t\t[OK]\t\t%x\n", tabela_wrappers_idt);
     kernel_printf("Paging\t\t[OK]\t\t%x\n", &page_directory);
     kernel_printf("Timer\t\t[ATIVO]\t\t100 Hz\n");
+
+    // Recupera os valores salvos com segurança pelo Assembly
+    uint32_t magic = multiboot_magic_salvo;
+    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info_salvo;
+
+    kernel_printf("\n\nDADOS DE EXECUCAO CAPTURADOS VIA MULTIBOOT:\n");
+    kernel_printf("-----------------------------------------\n");
+    kernel_printf("Codigo Magico Multiboot:\t%x ", magic);
+
+    // Valida se o código mágico confere com a especificação do GRUB
+    if (magic == 0x2BADB002) {
+        kernel_printf("[VALIDO]\n");
+    } else {
+        kernel_printf("[INVALIDO/DESCONHECIDO]\n");
+    }
+
+    // O bit 0 da flag indica se as informações de memória básica e estendida estão presentes
+    if (mbi && (mbi->flags & 0x01)) {
+        // Calcula a RAM total somando a baixa com a estendida, convertendo KB para MB
+        uint32_t ram_total_mb = (mbi->mem_lower + mbi->mem_upper) / 1024;
+        kernel_printf("Memoria RAM Detectada:\t\t%d MB (Lower: %d KB, Upper: %d KB)\n",
+                      ram_total_mb, mbi->mem_lower, mbi->mem_upper);
+    } else {
+        kernel_printf("Memoria RAM Detectada:\t[Nao fornecida pelo bootloader]\n");
+    }
+
+    // O bit 2 da flag indica se o bootloader passou uma linha de comando (argumentos do kernel)
+    if (mbi && (mbi->flags & 0x04)) {
+        // Como o endereço fornecido em mbi->cmdline é um ponteiro físico válido (memória baixa),
+        // nós podemos lê-lo diretamente como uma string comum do C!
+        const char *grub_args = (const char *)mbi->cmdline;
+        kernel_printf("Argumentos do GRUB/QEMU:\t\"%s\"\n", grub_args);
+    } else {
+        kernel_printf("Argumentos do GRUB/QEMU:\t[Nenhum parametro enviado]\n");
+    }
 
     // Abre a linha de comando oficial do seu SO
     kernel_printf("\nso_hibrido> ");
