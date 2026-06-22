@@ -2,6 +2,14 @@
 #include <stdint.h>
 #include <stdarg.h> // Necessário para gerenciar argumentos variáveis (...), nativo do GCC
 
+// Estrutura oficial de uma entrada de módulo Multiboot 1
+struct multiboot_mod_list {
+    uint32_t mod_start; // Endereço de memória física onde o arquivo começa
+    uint32_t mod_end;   // Endereço de memória física onde o arquivo termina
+    uint32_t cmdline;   // Ponteiro para o nome ou string associada ao módulo
+    uint32_t pad;
+} __attribute__((packed));
+
 // Estrutura de uma entrada individual do mapa de memória do Multiboot
 struct multiboot_mmap_entry {
     uint32_t size;
@@ -49,7 +57,8 @@ void inicializar_gdt();
 void inicializar_idt();
 void programar_pit_timer(uint32_t frequencia);
 void outb(uint16_t porta, uint8_t dado);
-uint8_t inb(uint16_t porta); // Nova função de leitura de porta de hardware
+uint8_t inb(uint16_t porta);
+void outw(uint16_t porta, uint16_t dado);
 
 // Mapa 1: Letras minúsculas e números padrão (Sem Shift)
 static const char kbd_map_normal[] = {
@@ -318,6 +327,43 @@ void kernel_mostrar_mmap() {
     kernel_printf("------------------------------------------------------------\n");
 }
 
+// Função do Shell para listar ramdisks carregados na RAM
+void kernel_mostrar_modulos() {
+    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info_salvo;
+
+    // Valida o Bit 3 das flags
+    if (!(mbi->flags & 0x08)) {
+        kernel_printf("Nenhum modulo (initrd) fornecido pelo bootloader.\n");
+        return;
+    }
+
+    kernel_printf("MODULOS / RAMDISKS DETECTADOS (%d carregados):\n", mbi->mods_count);
+    kernel_printf("------------------------------------------------------------\n");
+    kernel_printf("ID\tINICIO\t\tFIM\t\tTAMANHO\t\tLINHA DE COMANDO\n");
+
+    struct multiboot_mod_list *mod = (struct multiboot_mod_list *)mbi->mods_addr;
+
+    for (uint32_t i = 0; i < mbi->mods_count; i++) {
+        uint32_t tamanho = mod[i].mod_end - mod[i].mod_start;
+        const char *nome = (const char *)mod[i].cmdline;
+
+        kernel_printf("%d\t%x\t%x\t%d bytes\t\"%s\"\n",
+                      i, mod[i].mod_start, mod[i].mod_end, tamanho, nome ? nome : "null");
+    }
+    kernel_printf("------------------------------------------------------------\n");
+}
+
+// Lógica de encerramento ACPI direcionada ao barramento virtual do QEMU
+void kernel_acpi_shutdown() {
+    kernel_printf("Desligando o sistema de forma limpa via ACPI QEMU...\n");
+
+    // Comando universal de Poweroff aceito pelo barramento moderno do QEMU (Porta 0x604)
+    outw(0x604, 0x2000);
+
+    // Se o emulador for uma versão antiga ou diferente, tenta a porta legada alternativa (0xB004)
+    outw(0xB004, 0x2000);
+}
+
 // O Interpretador de Comandos do seu Sistema Operacional
 void kernel_processar_comando(const char *comando) {
     kernel_printf("\n"); // Pula para a linha de baixo para exibir a resposta
@@ -327,11 +373,17 @@ void kernel_processar_comando(const char *comando) {
         kernel_printf("  help\t\tExibe esta lista de comandos\n");
         kernel_printf("  clear\t\tLimpa a tela do monitor virtual\n");
         kernel_printf("  meminfo\tExibe o mapa detalhado de memoria RAM\n");
+        kernel_printf("  lsmod\t\tLista modulos/initrd carregados em RAM\n");
+        kernel_printf("  shutdown\tFecha o emulador QEMU via ACPI\n");
         kernel_printf("  reboot\tForca um reinicio fisico via hardware\n");
     } else if (kernel_strcmp(comando, "clear") == 0) {
         kernel_clear_screen();
     } else if (kernel_strcmp(comando, "meminfo") == 0) {
         kernel_mostrar_mmap(); // Executa a varredura do hardware
+    } else if (kernel_strcmp(comando, "lsmod") == 0) {
+        kernel_mostrar_modulos(); // Executa varredura de ramdisks
+    } else if (kernel_strcmp(comando, "shutdown") == 0) {
+        kernel_acpi_shutdown();  // Executa encerramento ACPI
     } else if (kernel_strcmp(comando, "reboot") == 0) {
         kernel_printf("Reiniciando a CPU...\n");
         // Pulsa a linha de reset do processador através do controlador 8042 (Porta 0x64)

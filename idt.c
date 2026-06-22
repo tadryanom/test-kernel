@@ -41,6 +41,10 @@ uint8_t inb(uint16_t porta) {
     __asm__ __volatile__("inb %1, %0" : "=a"(resultado) : "Nd"(porta));
     return resultado;
 }
+// Função utilitária para escrever 16 bits em uma porta física
+void outw(uint16_t porta, uint16_t dado) {
+    __asm__ __volatile__("outw %0, %1" : : "a"(dado), "Nd"(porta));
+}
 
 // Declara a função externa criada no main.c
 void kernel_printf(const char *format, ...);
