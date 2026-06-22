@@ -2,7 +2,7 @@
 CC = gcc
 LD = ld
 
-CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -fno-pie -fno-stack-protector
+CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -Werror -fno-pie -fno-stack-protector
 LDFLAGS = -m elf_i386 -T linker.ld -static
 
 # Arquivos do projeto
