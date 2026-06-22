@@ -301,13 +301,29 @@ void c_keyboard_handler() {
         char caractere = shift_pressionado ? kbd_map_shift[scancode] : kbd_map_normal[scancode];
 
         if (caractere != 0) {
-            // Cenário A: Se pressionar ENTER, processa o comando acumulado
+            // CENÁRIO A: Processa a tecla ENTER (\n)
             if (caractere == '\n') {
                 shell_buffer[shell_buffer_idx] = '\0'; // Finaliza a string do comando
                 kernel_processar_comando(shell_buffer);
                 shell_buffer_idx = 0; // Reseta o buffer para o próximo comando
             }
-            // Cenário B: Se for caractere normal, joga no buffer e espelha na tela
+            // CENÁRIO B: Processa a tecla BACKSPACE (\b)
+            else if (caractere == '\b') {
+                // Só permite apagar se houver caracteres digitados na linha atual do prompt
+                if (shell_buffer_idx > 0) {
+                    shell_buffer_idx--;         // Recua o índice do buffer de comando
+                    cursor_x--;                 // Recua o cursor lógico da tela
+
+                    // Substitui a letra apagada por um espaço vazio na memória de vídeo VGA
+                    volatile char *video_memory = (volatile char *)0xB8000;
+                    int offset = (cursor_y * 160) + (cursor_x * 2);
+                    video_memory[offset] = ' ';
+                    video_memory[offset + 1] = 0x07;
+
+                    kernel_mover_cursor(cursor_x, cursor_y); // Sincroniza o cursor piscante
+                }
+            }
+            // CENÁRIO C: Processa caracteres comuns de texto
             else if (shell_buffer_idx < BUFFER_SHELL_TAMANHO - 1) {
                 shell_buffer[shell_buffer_idx++] = caractere;
                 kernel_putc(caractere, 0x0F); // Texto branco brilhante
