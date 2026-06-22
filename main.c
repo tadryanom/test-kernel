@@ -353,6 +353,42 @@ void kernel_mostrar_modulos() {
     kernel_printf("------------------------------------------------------------\n");
 }
 
+void kernel_cat_modulo(int index) {
+    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info_salvo;
+
+    if (!(mbi->flags & 0x08)) {
+        kernel_printf("Nenhum modulo de memoria disponivel.\n");
+        return;
+    }
+
+    if (index < 0 || (uint32_t)index >= mbi->mods_count) {
+        kernel_printf("Erro: Indice de modulo %d invalido. Use 'lsmod'.\n", index);
+        return;
+    }
+
+    struct multiboot_mod_list *mod = (struct multiboot_mod_list *)mbi->mods_addr;
+
+    // Captura os ponteiros de memória física delimitados pelo Multiboot
+    char *ptr_inicio = (char *)mod[index].mod_start;
+    char *ptr_fim = (char *)mod[index].mod_end;
+
+    kernel_printf("CONTEUDO DO MODULO %d (%d bytes):\n", index, (uint32_t)(ptr_fim - ptr_inicio));
+    kernel_printf("------------------------------------------------------------\n");
+
+    // Varre byte a byte a memória RAM física imprimindo os caracteres na tela
+    char *p = ptr_inicio;
+    while (p < ptr_fim) {
+        // Se o arquivo contiver caracteres imprimíveis comuns, joga no monitor
+        if (*p >= 32 || *p == '\n' || *p == '\t') {
+            kernel_putc(*p, 0x0F); // Texto branco brilhante
+        } else {
+            kernel_putc('.', 0x07); // Substitui caracteres de controle não-imprimíveis por ponto
+        }
+        p++;
+    }
+    kernel_printf("\n------------------------------------------------------------\n");
+}
+
 // Lógica de encerramento ACPI direcionada ao barramento virtual do QEMU
 void kernel_acpi_shutdown() {
     kernel_printf("Desligando o sistema de forma limpa via ACPI QEMU...\n");
@@ -374,6 +410,7 @@ void kernel_processar_comando(const char *comando) {
         kernel_printf("  clear\t\tLimpa a tela do monitor virtual\n");
         kernel_printf("  meminfo\tExibe o mapa detalhado de memoria RAM\n");
         kernel_printf("  lsmod\t\tLista modulos/initrd carregados em RAM\n");
+        kernel_printf("  cat\t\tExibe o conteudo do modulo, ex: 'cat'\n");
         kernel_printf("  shutdown\tFecha o emulador QEMU via ACPI\n");
         kernel_printf("  reboot\tForca um reinicio fisico via hardware\n");
     } else if (kernel_strcmp(comando, "clear") == 0) {
@@ -382,6 +419,8 @@ void kernel_processar_comando(const char *comando) {
         kernel_mostrar_mmap(); // Executa a varredura do hardware
     } else if (kernel_strcmp(comando, "lsmod") == 0) {
         kernel_mostrar_modulos(); // Executa varredura de ramdisks
+    } else if (kernel_strcmp(comando, "cat") == 0) {
+        kernel_cat_modulo(0); // Lê automaticamente o primeiro ramdisk de índice 0
     } else if (kernel_strcmp(comando, "shutdown") == 0) {
         kernel_acpi_shutdown();  // Executa encerramento ACPI
     } else if (kernel_strcmp(comando, "reboot") == 0) {
