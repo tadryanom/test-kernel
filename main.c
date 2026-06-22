@@ -10,14 +10,24 @@ void programar_pit_timer(uint32_t frequencia);
 void outb(uint16_t porta, uint8_t dado);
 uint8_t inb(uint16_t porta); // Nova função de leitura de porta de hardware
 
-// Tabela de conversão Scancode (Set 1) para ASCII (apenas teclas básicas e minúsculas)
-static const char kbd_scancode_map[128] = {
+// Mapa 1: Letras minúsculas e números padrão (Sem Shift)
+static const char kbd_map_normal[] = {
     0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
   '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
     0,  'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',   0,
   '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/',   0, '*',   0, ' '
 };
 
+// Mapa 2: Caracteres equivalentes quando o Shift está ativado
+static const char kbd_map_shift[] = {
+    0,  27, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '\b',
+  '\t', 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
+    0,  'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',   0,
+  '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?',   0, '*',   0, ' '
+};
+
+// Variável de estado global para controlar se o Shift está pressionado
+static int shift_pressionado = 0;
 // Posição global para sabermos onde escrever o texto do teclado na tela
 static int teclado_cursor_x = 0;
 static const int teclado_linha_y = 9;
@@ -67,10 +77,22 @@ void c_keyboard_handler() {
     // Lê o scancode elétrico da porta do chip controlador de teclado (0x60)
     uint8_t scancode = inb(0x60);
 
+     // DETECÇÃO: Verifica se as teclas de Shift (Esquerdo: 0x2A ou Direito: 0x36) foram PRESSIONADAS
+    if (scancode == 0x2A || scancode == 0x36) {
+        shift_pressionado = 1;
+        return;
+    }
+
+    // DETECÇÃO: Verifica se as teclas de Shift (Esquerdo: 0xAA ou Direito: 0xB6) foram SOLTAS
+    if (scancode == 0xAA || scancode == 0xB6) {
+        shift_pressionado = 0;
+        return;
+    }
+
     // Se o bit 7 estiver zerado, significa que a tecla foi PRESSIONADA (Key Down)
     // Se estiver em 1, significa que a tecla foi SOLTA (Key Up), o que ignoramos aqui
     if (!(scancode & 0x80)) {
-        char caractere = kbd_scancode_map[scancode];
+        char caractere = shift_pressionado ? kbd_map_shift[scancode] : kbd_map_normal[scancode];
 
         if (caractere != 0) {
             volatile char *video_memory = (volatile char *)0xB8000;
@@ -139,14 +161,13 @@ void inicializar_kernel(void) {
     kernel_print_at(0, 8, "Digite algo diretamente no QEMU:", 0x0B); // Ciano
 
     // Posiciona o cursor piscante exatamente onde a digitação do usuário começará
-    //kernel_mover_cursor(teclado_cursor_x, teclado_linha_y);
-    kernel_mover_cursor(0, 9);
+    kernel_mover_cursor(teclado_cursor_x, teclado_linha_y);
 
     // FORÇANDO UM CRASH PROPOSITAL DE EXCEÇÃO (Vetor 0)
-    volatile int a = 5;
-    volatile int b = 0;
-    volatile int c = a / b; // Isso gerará um erro físico #DE (Vetor 0)
-    (void)c;
+    //volatile int a = 5;
+    //volatile int b = 0;
+    //volatile int c = a / b; // Isso gerará um erro físico #DE (Vetor 0)
+    //(void)c;
 
     // 3. Configurar TSS
     // 4. Ativar Paginação / Carregar CR3
