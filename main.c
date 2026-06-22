@@ -205,8 +205,12 @@ void inicializar_kernel(void) {
 
     // FORÇANDO UM PAGE FAULT (VETOR 14) PROPOSITAL
     // Criamos um ponteiro apontando para um endereço arbitrário e tentamos gravar dados nele
-    //volatile uint32_t *ponteiro_invalido = (volatile uint32_t *)0xDEADBEEF;
-//    *ponteiro_invalido = 42; // Isso vai disparar a exceção #PF imediatamente!
+    volatile uint32_t *ponteiro_invalido = (volatile uint32_t *)0xDEADBEEF;
+    *ponteiro_invalido = 42; // Isso vai disparar a exceção #PF imediatamente!
+
+    // PROVA DE AUTOCURA: Se o Kernel chegar nesta linha de código abaixo,
+    // significa que o tratador corrigiu a memória e evitou o travamento da CPU!
+    kernel_print_at(0, 17, "-> SUCESSO: Kernel se recuperou do Page Fault e continua vivo!", 0x0A); // Verde brilhante
 
     // 5. Entrar no loop do Sistema Operacional
     while(1) {
