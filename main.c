@@ -2,6 +2,14 @@
 #include <stdint.h>
 #include <stdarg.h> // Necessário para gerenciar argumentos variáveis (...), nativo do GCC
 
+// Estrutura de uma entrada individual do mapa de memória do Multiboot
+struct multiboot_mmap_entry {
+    uint32_t size;
+    uint64_t base_addr; // Endereço inicial da faixa de memória (64-bit)
+    uint64_t length;    // Tamanho da faixa de memória (64-bit)
+    uint32_t type;      // 1 = Livre (Disponível), Outros = Reservado
+} __attribute__((packed));
+
 // Definição parcial da estrutura oficial Multiboot 1 (especificação de hardware)
 struct multiboot_info {
     uint32_t flags;
@@ -275,6 +283,41 @@ int kernel_strcmp(const char *s1, const char *s2) {
     return 1;
 }
 
+// Função interna do Shell para varrer e listar o mapa de memória física
+void kernel_mostrar_mmap() {
+    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info_salvo;
+
+    // Verifica se o bootloader forneceu as informações de mapa de memória (Bit 6 da flag)
+    if (!(mbi->flags & 0x40)) {
+        kernel_printf("Erro: Mapa de memoria detalhado nao fornecido pelo bootloader.\n");
+        return;
+    }
+
+    kernel_printf("MAPA DE MEMORIA FISICA DETALHADO (MMAP):\n");
+    kernel_printf("------------------------------------------------------------\n");
+    kernel_printf("BASE FISICA\t\tTAMANHO\t\tSTATUS\n");
+
+    // Ponteiro para a primeira entrada do mapa de memória na memória física baixa
+    struct multiboot_mmap_entry *mmap = (struct multiboot_mmap_entry *)mbi->mmap_addr;
+
+    // Varre o mmap avançando pelo tamanho de cada entrada até cobrir o mmap_length total
+    while ((uint32_t)mmap < mbi->mmap_addr + mbi->mmap_length) {
+        // Exibe a base e o tamanho da região em formato hexadecimal
+        // Como o endereço é 64-bit e nosso printf lida com 32-bit, passamos a parte baixa (cast uint32_t)
+        kernel_printf("%x\t\t%x\t\t", (uint32_t)mmap->base_addr, (uint32_t)mmap->length);
+
+        if (mmap->type == 1) {
+            kernel_printf("[LIVRE / RAM]\n");
+        } else {
+            kernel_printf("[RESERVADO]\n");
+        }
+
+        // Avança o ponteiro para a próxima entrada somando o tamanho dela + os 4 bytes do próprio campo size
+        mmap = (struct multiboot_mmap_entry *)((uint32_t)mmap + mmap->size + sizeof(mmap->size));
+    }
+    kernel_printf("------------------------------------------------------------\n");
+}
+
 // O Interpretador de Comandos do seu Sistema Operacional
 void kernel_processar_comando(const char *comando) {
     kernel_printf("\n"); // Pula para a linha de baixo para exibir a resposta
@@ -283,9 +326,12 @@ void kernel_processar_comando(const char *comando) {
         kernel_printf("Comandos aceitos:\n");
         kernel_printf("  help\t\tExibe esta lista de comandos\n");
         kernel_printf("  clear\t\tLimpa a tela do monitor virtual\n");
+        kernel_printf("  meminfo\tExibe o mapa detalhado de memoria RAM\n");
         kernel_printf("  reboot\tForca um reinicio fisico via hardware\n");
     } else if (kernel_strcmp(comando, "clear") == 0) {
         kernel_clear_screen();
+    } else if (kernel_strcmp(comando, "meminfo") == 0) {
+        kernel_mostrar_mmap(); // Executa a varredura do hardware
     } else if (kernel_strcmp(comando, "reboot") == 0) {
         kernel_printf("Reiniciando a CPU...\n");
         // Pulsa a linha de reset do processador através do controlador 8042 (Porta 0x64)
