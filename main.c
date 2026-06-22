@@ -205,8 +205,8 @@ void inicializar_kernel(void) {
 
     // FORÇANDO UM PAGE FAULT (VETOR 14) PROPOSITAL
     // Criamos um ponteiro apontando para um endereço arbitrário e tentamos gravar dados nele
-    volatile uint32_t *ponteiro_invalido = (volatile uint32_t *)0xDEADBEEF;
-    *ponteiro_invalido = 42; // Isso vai disparar a exceção #PF imediatamente!
+    //volatile uint32_t *ponteiro_invalido = (volatile uint32_t *)0xDEADBEEF;
+//    *ponteiro_invalido = 42; // Isso vai disparar a exceção #PF imediatamente!
 
     // 5. Entrar no loop do Sistema Operacional
     while(1) {
@@ -236,61 +236,94 @@ void imprimir_texto(const char *str) {
     );
 }
 
+// Função do Modo Usuário para abrir, ler e fechar um arquivo do sistema Host
+void ler_arquivo_host(const char *caminho) {
+    int fd = 0;
+    char buffer_conteudo[256];
+    int bytes_lidos = 0;
+
+    // 1. Executa a Syscall 'open' (5) no Linux 32-bit:
+    // EAX = 5 (sys_open)
+    // EBX = ponteiro para a string do caminho do arquivo
+    // ECX = flags de abertura (0 = O_RDONLY, apenas leitura)
+    __asm__ __volatile__ (
+        "mov $5, %%eax\n"
+        "mov %1, %%ebx\n"
+        "mov $0, %%ecx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(fd)
+        : "r"(caminho)
+        : "eax", "ebx", "ecx"
+    );
+
+    // Se o retorno do FD for negativo, significa que o arquivo não existe ou não temos permissão
+    if (fd < 0) {
+        imprimir_texto("\n[Erro] Nao foi possivel abrir o arquivo solicitado.\n");
+        return;
+    }
+
+    // 2. Executa a Syscall 'read' (3) no Linux 32-bit:
+    // EAX = 3 (sys_read)
+    // EBX = File Descriptor (fd) retornado no passo anterior
+    // ECX = endereço do buffer para guardar os dados lidos
+    // EDX = tamanho máximo a ler (255 bytes)
+    __asm__ __volatile__ (
+        "mov $3, %%eax\n"
+        "mov %1, %%ebx\n"
+        "mov %2, %%ecx\n"
+        "mov %3, %%edx\n"
+        "int $0x80\n"
+        "mov %%eax, %0\n"
+        : "=r"(bytes_lidos)
+        : "r"(fd), "r"(buffer_conteudo), "r"(sizeof(buffer_conteudo) - 1)
+        : "eax", "ebx", "ecx", "edx"
+    );
+
+    if (bytes_lidos > 0) {
+        buffer_conteudo[bytes_lidos] = '\0'; // Garante o fim da string com nulo
+        imprimir_texto("\n[Linux Host] Conteudo do arquivo lido com sucesso:\n");
+        imprimir_texto("--------------------------------------------------\n");
+        imprimir_texto(buffer_conteudo);
+        imprimir_texto("--------------------------------------------------\n");
+    } else {
+        imprimir_texto("\n[Aviso] O arquivo foi aberto, mas estava vazio.\n");
+    }
+
+    // 3. Executa a Syscall 'close' (6) no Linux 32-bit:
+    // EAX = 6 (sys_close)
+    // EBX = File Descriptor (fd)
+    __asm__ __volatile__ (
+        "mov $60, %%eax\n" // Nota: No Linux moderno de compatibilidade de 32-bits, sys_close é 6
+        "mov $6, %%eax\n"
+        "mov %0, %%ebx\n"
+        "int $0x80\n"
+        :
+        : "r"(fd)
+        : "eax", "ebx"
+    );
+}
+
 // Compilado respeitando as bibliotecas do Host ou Syscalls diretas
 // 1. O ponteiro da pilha atual já contém os argumentos do Linux (argc, argv)
 // 2. Mapear memória simulada se necessário
 // 3. Executar lógica estilo User-Mode Linux (UML)
 // Nova assinatura recebendo os parâmetros diretamente da pilha mapeada pelo Linux
 void inicializar_user_mode(int argc, char **argv) {
-    char buffer_teclado[64];
-    int bytes_lidos = 0;
-
     imprimir_texto("==================================================\n");
-    imprimir_texto(" MODO USUARIO ATIVO: Digite algo e aperte ENTER:\n");
+    imprimir_texto(" MODO USUARIO ATIVO (Estilo User-Mode Linux)\n");
     imprimir_texto("==================================================\n");
 
-    // Syscall 'read' (3) no Linux de 32 bits:
-    // EAX = 3 (sys_read)
-    // EBX = 0 (stdin - Teclado)
-    // ECX = endereço do buffer
-    // EDX = tamanho máximo a ler
-    __asm__ __volatile__ (
-        "mov $3, %%eax\n"
-        "mov $0, %%ebx\n"
-        "mov %1, %%ecx\n"
-        "mov %2, %%edx\n"
-        "int $0x80\n"
-        "mov %%eax, %0\n" // Retorna em bytes_lidos a quantidade digitada
-        : "=r"(bytes_lidos)
-        : "r"(buffer_teclado), "r"(sizeof(buffer_teclado) - 1)
-        : "eax", "ebx", "ecx", "edx"
-    );
-
-    if (bytes_lidos > 0) {
-        buffer_teclado[bytes_lidos] = '\0'; // Finaliza a string com nulo de segurança
-        imprimir_texto("\n[Linux Host] Voce digitou com sucesso: ");
-        imprimir_texto(buffer_teclado);
+    // Se o usuário passou pelo menos um argumento extra no terminal, trata-o como o caminho do arquivo!
+    if (argc > 1) {
+        imprimir_texto("Tentando ler o arquivo passado por argumento: ");
+        imprimir_texto(argv[1]);
         imprimir_texto("\n");
-    }
 
-    imprimir_texto("Argumentos detectados: ");
-
-    // Converte o número de argumentos para caractere simples (funciona para argc < 10)
-    char argc_char = (char)('0' + argc);
-    char argc_str[3] = {argc_char, '\n', '\0'};
-    imprimir_texto(argc_str);
-
-    // Varre o array argv e imprime cada um dos parâmetros passados no terminal
-    for (int i = 0; i < argc; i++) {
-        imprimir_texto(" -> argv[");
-
-        char idx_char = (char)('0' + i);
-        char idx_str[3] = {idx_char, ']', '\0'};
-        imprimir_texto(idx_str);
-
-        imprimir_texto(": ");
-        imprimir_texto(argv[i]);
-        imprimir_texto("\n");
+        ler_arquivo_host(argv[1]);
+    } else {
+        imprimir_texto("Nenhum arquivo informado via argumento.\n");
+        imprimir_texto("Dica: rode passando um arquivo, ex: ./meu_sistema_hibrido /etc/hostname\n");
     }
 
     imprimir_texto("==================================================\n");
