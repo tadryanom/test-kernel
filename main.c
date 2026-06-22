@@ -2,6 +2,9 @@
 #include <stdint.h>
 #include <stdarg.h> // Necessário para gerenciar argumentos variáveis (...), nativo do GCC
 
+// Declaração do array de ponteiros para os tratadores gerados no Assembly
+extern uint32_t tabela_wrappers_idt[];
+
 volatile uint32_t ticks_do_relogio = 0; // Contador de tempo global do Kernel
 // Cria as tabelas na seção BSS (Alinhadas em 4096 bytes como o hardware exige)
 __attribute__((aligned(4096))) uint32_t page_directory[1024];
@@ -102,6 +105,16 @@ void kernel_putc(char c, uint8_t cor) {
     if (c == '\n') {
         cursor_x = 0;
         cursor_y++;
+    } else if (c == '\t') {
+        // Avança o cursor até o próximo múltiplo de 4 colunas
+        int espaços_necessarios = 4 - (cursor_x % 4);
+        cursor_x += espaços_necessarios;
+
+        // Se a tabulação estourar o limite da linha (80 colunas), quebra a linha
+        if (cursor_x >= 80) {
+            cursor_x = 0;
+            cursor_y++;
+        }
     } else {
         int offset = (cursor_y * 160) + (cursor_x * 2);
         video_memory[offset] = c;
@@ -285,7 +298,7 @@ void c_timer_handler() {
         tempo_str[16] = '0' + (segundos % 10);
 
         // Escreve de forma fixa na Linha 5, Coluna 0 da tela do QEMU
-        kernel_print_at(0, 5, tempo_str, 0x0E); // Texto Amarelo
+        kernel_print_at(0, 8, tempo_str, 0x0E); // Texto Amarelo
     }
 }
 
@@ -315,17 +328,14 @@ void inicializar_kernel(void) {
     // Ativa as interrupções de hardware na CPU (limpa a flag de interrupção)
     __asm__ __volatile__("sti");
 
-    // Testando o printf flexível com strings e decimais
-    kernel_printf("KERNEL HIBRIDO OPERACIONAL\n");
-    kernel_printf("--------------------------\n");
-    kernel_printf("Pagina de boot ativa em modo linear 1:1.\n");
-    kernel_printf("Frequencia do Timer (IRQ0): %d Hz\n", 100);
-    kernel_printf("Endereco fisico da tabela: %x\n", &page_directory);
-    kernel_printf("\nSimulando falha de execucao...\n");
-
-    // FORÇANDO UM "INVALID OPCODE" (Vetor 6) PROPOSITAL VIA ASSEMBLY
-    // A instrução 'ud2' gera intencionalmente um opcode inválido no x86
-    __asm__ __volatile__("ud2");
+    // Testando o kernel_printf atualizado com suporte a tabulações \t
+    kernel_printf("TABELA DE STATUS DO HARDWARE (RING 0):\n");
+    kernel_printf("-------------------------------------\n");
+    kernel_printf("COMPONENTE\tSTATUS\t\tENDERECO\n");
+    kernel_printf("GDT\t\t\t[OK]\t\t0x08 (CS Selector)\n");
+    kernel_printf("IDT\t\t\t[OK]\t\t%x\n", tabela_wrappers_idt);
+    kernel_printf("Paging\t\t[OK]\t\t%x\n", &page_directory);
+    kernel_printf("Timer\t\t[ATIVO]\t\t100 Hz\n");
 
     // 5. Entrar no loop do Sistema Operacional
     while(1) {
@@ -430,19 +440,23 @@ void ler_arquivo_host(const char *caminho) {
 // Nova assinatura recebendo os parâmetros diretamente da pilha mapeada pelo Linux
 void inicializar_user_mode(int argc, char **argv) {
     imprimir_texto("==================================================\n");
-    imprimir_texto(" MODO USUARIO ATIVO (Estilo User-Mode Linux)\n");
+    imprimir_texto(" MODO USUARIO ATIVO: Auditoria de Sistema Host\n");
     imprimir_texto("==================================================\n");
 
-    // Se o usuário passou pelo menos um argumento extra no terminal, trata-o como o caminho do arquivo!
+    // Cenário A: Se o usuário passou um arquivo específico via terminal
     if (argc > 1) {
         imprimir_texto("Tentando ler o arquivo passado por argumento: ");
         imprimir_texto(argv[1]);
         imprimir_texto("\n");
-
         ler_arquivo_host(argv[1]);
-    } else {
-        imprimir_texto("Nenhum arquivo informado via argumento.\n");
-        imprimir_texto("Dica: rode passando um arquivo, ex: ./meu_sistema_hibrido /etc/hostname\n");
+    }
+    // Cenário B: Se rodar sem argumentos, ativa a inteligência de auditoria automática
+    else {
+        imprimir_texto("Nenhum argumento fornecido. Coletando dados do Host...\n\n");
+        imprimir_texto("[Auditoria] Versao do Kernel do Linux Hospedeiro:");
+        ler_arquivo_host("/proc/version");
+        imprimir_texto("\n[Auditoria] Tempo de atividade do Host (segundos ativos / segundos ociosos):");
+        ler_arquivo_host("/proc/uptime");
     }
 
     imprimir_texto("==================================================\n");
