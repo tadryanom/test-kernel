@@ -35,9 +35,8 @@ struct multiboot_info {
     uint32_t mmap_addr;
 } __attribute__((packed));
 
-// AS DUAS VARIÁVEIS GLOBAIS QUE O ASSEMBLY VAI PREENCHER FIZAMENTE
-uint32_t multiboot_magic_salvo = 0;
-uint32_t multiboot_info_salvo = 0;
+// multiboot info global
+struct multiboot_info *multiboot_info = (void*)0;
 
 // Declaração do array de ponteiros para os tratadores gerados no Assembly
 extern uint32_t tabela_wrappers_idt[];
@@ -294,7 +293,7 @@ int kernel_strcmp(const char *s1, const char *s2) {
 
 // Função interna do Shell para varrer e listar o mapa de memória física
 void kernel_mostrar_mmap() {
-    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info_salvo;
+    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info;
 
     // Verifica se o bootloader forneceu as informações de mapa de memória (Bit 6 da flag)
     if (!(mbi->flags & 0x40)) {
@@ -329,7 +328,7 @@ void kernel_mostrar_mmap() {
 
 // Função do Shell para listar ramdisks carregados na RAM
 void kernel_mostrar_modulos() {
-    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info_salvo;
+    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info;
 
     // Valida o Bit 3 das flags
     if (!(mbi->flags & 0x08)) {
@@ -354,7 +353,7 @@ void kernel_mostrar_modulos() {
 }
 
 void kernel_cat_modulo(int index) {
-    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info_salvo;
+    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info;
 
     if (!(mbi->flags & 0x08)) {
         kernel_printf("Nenhum modulo de memoria disponivel.\n");
@@ -513,8 +512,8 @@ void c_syscall_handler() {
     kernel_print_at(0, 2, "-> INTERRUPCAO INT 0x80 CAPTURADA COM SUCESSO EM RING 0!", 0x0E);
 }
 
-// Compilado com opções de Kernel (ex: -ffreestanding)
-void inicializar_kernel(void) {
+// Nova assinatura recebendo os dados diretamente capturados do GRUB/QEMU
+void inicializar_kernel(uint32_t magic, struct multiboot_info *mbi) {
     kernel_clear_screen(); // Limpa completamente o iPXE e rastros da BIOS antes de escrever
     // 1. Configurar GDT nativa
     inicializar_gdt();
@@ -539,9 +538,8 @@ void inicializar_kernel(void) {
     kernel_printf("Paging\t\t[OK]\t\t%x\n", &page_directory);
     kernel_printf("Timer\t\t[ATIVO]\t\t100 Hz\n");
 
-    // Recupera os valores salvos com segurança pelo Assembly
-    uint32_t magic = multiboot_magic_salvo;
-    struct multiboot_info *mbi = (struct multiboot_info *)multiboot_info_salvo;
+    // salva multiboot info global
+    multiboot_info = (struct multiboot_info *)mbi;
 
     kernel_printf("\n\nDADOS DE EXECUCAO CAPTURADOS VIA MULTIBOOT:\n");
     kernel_printf("-----------------------------------------\n");

@@ -17,8 +17,8 @@ multiboot_header:
 .extern inicializar_user_mode
 _start:
     # 1. SALVAMENTO IMEDIATO: Guarda os dados puros do QEMU antes de QUALQUER outra instrução
-    mov %eax, multiboot_magic_salvo
-    mov %ebx, multiboot_info_salvo
+    mov %eax, %ecx      # ECX = Código Mágico (0x2BADB002)
+    mov %ebx, %edx      # EDX = Ponteiro para a estrutura multiboot_info
     # 2. Salva o valor de CS em um registrador de uso geral AX
     mov %cs, %ax
     # 3. Isola os 2 bits menos significativos (CPL)
@@ -42,7 +42,10 @@ _start:
     mov $stack_top, %esp
     # 2. Alinha a pilha em 16 bytes para manter a conformidade da ABI do GCC
     and $-16, %esp
-    # 3. Salta para o C levando as estruturas de boot
+    # 3. Empilha os argumentos para a função C (da direita para a esquerda)
+    push %edx           # Segundo argumento: struct multiboot_info *mbi
+    push %ecx           # Primeiro argumento: uint32_t magic
+    # 4. Salta para o C levando as estruturas de boot
     call inicializar_kernel
     # Se o kernel retornar por erro, trava
     jmp .trava_cpu
